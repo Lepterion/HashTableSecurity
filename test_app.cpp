@@ -4,58 +4,50 @@
 #include <functional>
 #include <cstdint>
 #include <iomanip> // Для гарного виводу hex кодів
-#include "the_code.cpp"
+#include "protocol.cpp"
 
 using namespace std;
 
-// Допоміжна функція для Володимира, щоб показати "погляд хакера"
+// "Погляд хакера" — сирий дамп байтів значення
 void print_memory_hex(const vector<uint8_t>& data) {
     cout << "[Raw RAM Dump]: ";
-    for (int i = 0; i < data.size(); ++i) {
-        // Виводимо байти у шістнадцятковому форматі, як у дебагерах
+    for (size_t i = 0; i < data.size(); ++i)
         cout << hex << setw(2) << setfill('0') << (int)data[i] << " ";
-    }
-    cout << dec << endl; // Повертаємо десятковий формат
+    cout << dec << endl;
 }
 
 int main() {
-    cout << "🛡️ Ласкаво просимо до Secure Vault 🛡️" << endl;
-    cout << "Генерація сесійного ключа..." << endl;
-    
-    // В реальності тут має бути рандомізатор, для демо беремо константу
-    SecurityProtocol vault_protocol(133742069); 
+    cout << "🛡️ Secure Vault — захищена хеш-таблиця 🛡️\n" << endl;
 
-    // Створюємо запис
-    SecureNode my_secret;
-    my_secret.key = "Binance_API_Key";
-    my_secret.key_hash = hash<string>{}(my_secret.key);
-    
-    string api_key = "abc123xyz987";
-    my_secret.obfuscated_value.assign(api_key.begin(), api_key.end());
+    // Таблиця тримає всередині власну сесію шифрування (ChaCha20)
+    SecureHashTable vault(16);
 
-    cout << "\nЗберігаємо ключ: " << api_key << " ..." << endl;
-    
-    // Шифруємо перед збереженням в "таблицю"
-    vault_protocol.process_in_place(&my_secret);
-    cout << "Запис захищено і збережено!" << endl;
+    // Зберігаємо кілька секретів — у таблиці вони одразу шифруються
+    vault.insert("Binance_API_Key", "abc123xyz987");
+    vault.insert("DB_Password",      "qwerty!2026");
+    cout << "Збережено 2 секрети у захищену таблицю." << endl;
 
     cout << "\n--- Спроба сканування пам'яті (Cheat Engine) ---" << endl;
-    // Хакер дивиться в пам'ять і бачить лише незрозумілий набір байтів
-    print_memory_hex(my_secret.obfuscated_value);
-    
-    // Намагаємося прочитати як текст
-    string hacked_text(my_secret.obfuscated_value.begin(), my_secret.obfuscated_value.end());
-    cout << "[Text View]: " << hacked_text << " (Сміття)" << endl;
+    const vector<uint8_t>* raw = vault.raw_bytes("Binance_API_Key");
+    print_memory_hex(*raw);
+    cout << "[Text View]: " << string(raw->begin(), raw->end())
+         << "  (сміття)" << endl;
 
     cout << "\n--- Легальний запит через API хеш-таблиці ---" << endl;
-    // Розшифровуємо на льоту
-    vault_protocol.process_in_place(&my_secret);
-    string legit_text(my_secret.obfuscated_value.begin(), my_secret.obfuscated_value.end());
-    cout << "Отримане значення: " << legit_text << endl;
+    string value;
+    if (vault.find("Binance_API_Key", value))
+        cout << "Binance_API_Key = " << value << endl;
+    if (vault.find("DB_Password", value))
+        cout << "DB_Password     = " << value << endl;
 
-    // Безпечно видаляємо сесію
-    vault_protocol.secure_wipe(&my_secret);
-    cout << "\nСесію завершено. Дані затерто." << endl;
+    cout << "\n--- Видалення секрету ---" << endl;
+    vault.erase("Binance_API_Key");
+    cout << "Binance_API_Key: "
+         << (vault.find("Binance_API_Key", value) ? "ще присутній"
+                                                  : "видалено та затерто")
+         << endl;
 
+    cout << "\nСесію завершено. При знищенні таблиці всі дані затираються."
+         << endl;
     return 0;
 }

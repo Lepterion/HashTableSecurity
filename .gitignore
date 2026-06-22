@@ -1,0 +1,14 @@
+# Скомпільовані бінарники
+app
+test
+test_app
+test_runner
+benchmark
+*.exe
+*.out
+*.o
+*.obj
+
+# Артефакти збірки / IDE
+build/
+.cache/
