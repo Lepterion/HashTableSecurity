@@ -1,5 +1,5 @@
-// Порівняння: ручний ChaCha20 (protocol.cpp) vs OpenSSL ChaCha20
-// (protocol_openssl.cpp) vs plaintext std::unordered_map.
+// Порівняння: ручний ChaCha20 (protocol.hpp) vs OpenSSL ChaCha20
+// (protocol_openssl.hpp) vs plaintext std::unordered_map.
 // Компіляція:  g++ -std=c++17 -O2 benchmark_openssl.cpp -o benchmark_openssl -lcrypto
 #include <iostream>
 #include <vector>
@@ -8,7 +8,6 @@
 #include <chrono>
 #include <iomanip>
 #include <cstdint>
-#include <functional>
 
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -16,8 +15,8 @@
 using namespace std;
 using namespace std::chrono;
 
-#include "protocol.cpp"          // глобальний простір імен: ручна реалізація
-#include "protocol_openssl.cpp"  // простір імен ossl: на основі OpenSSL
+#include "protocol.hpp"          // ручний бекенд + ::SecureHashTable
+#include "protocol_openssl.hpp"  // ossl::SecureHashTable
 
 struct Timer {
     high_resolution_clock::time_point t0{high_resolution_clock::now()};
@@ -29,7 +28,16 @@ struct Timer {
 
 static volatile size_t g_sink = 0;
 
-// Сирий прогін OpenSSL ChaCha20 по буферу (для виміру пропускної здатності)
+template <class Table>
+static void bench_table(Table& table, const vector<string>& keys,
+                        const vector<string>& values, double& ins, double& fnd) {
+    int N = (int)keys.size();
+    { Timer t; for (int i = 0; i < N; ++i) table.insert(keys[i], values[i]); ins = t.ms(); }
+    { string out; Timer t;
+      for (int i = 0; i < N; ++i) { table.find(keys[i], out); g_sink += out.size(); }
+      fnd = t.ms(); }
+}
+
 static void openssl_chacha(const uint8_t key[32], const uint8_t iv[16],
                            uint8_t* data, int len) {
     EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
@@ -42,7 +50,6 @@ static void openssl_chacha(const uint8_t key[32], const uint8_t iv[16],
 
 int main() {
     const int N = 100000;
-
     vector<string> keys(N), values(N);
     for (int i = 0; i < N; ++i) {
         keys[i]   = "key_" + to_string(i);
@@ -54,17 +61,6 @@ int main() {
     cout << "============================================================\n\n";
     cout << fixed << setprecision(2);
 
-    auto bench_table = [&](auto& table, const char* name,
-                           double& ins, double& fnd) {
-        { Timer t; for (int i = 0; i < N; ++i) table.insert(keys[i], values[i]);
-          ins = t.ms(); }
-        { string out; Timer t;
-          for (int i = 0; i < N; ++i) { table.find(keys[i], out); g_sink += out.size(); }
-          fnd = t.ms(); }
-        (void)name;
-    };
-
-    // --- plaintext ---
     double p_ins, p_fnd;
     {
         unordered_map<string, string> plain; plain.reserve(N);
@@ -72,16 +68,14 @@ int main() {
         { Timer t; for (int i = 0; i < N; ++i) g_sink += plain[keys[i]].size(); p_fnd = t.ms(); }
     }
 
-    // --- ручний ChaCha20 ---
     double m_ins, m_fnd;
-    { ::SecureHashTable t(N * 2); bench_table(t, "manual", m_ins, m_fnd); }
+    { ::SecureHashTable t(16); bench_table(t, keys, values, m_ins, m_fnd); }
 
-    // --- OpenSSL ChaCha20 ---
     double o_ins, o_fnd;
-    { ossl::SecureHashTable t(N * 2); bench_table(t, "openssl", o_ins, o_fnd); }
+    { ossl::SecureHashTable t(16); bench_table(t, keys, values, o_ins, o_fnd); }
 
     auto row = [&](const char* name, double ins, double fnd) {
-        cout << left << setw(24) << name << right
+        cout << left << setw(26) << name << right
              << " insert: " << setw(8) << ins << " ms"
              << "   find: " << setw(8) << fnd << " ms\n";
     };
@@ -95,42 +89,37 @@ int main() {
     cout << "OpenSSL vs ручний (find): x" << (m_fnd / o_fnd)
          << " (>1 = OpenSSL швидше)\n";
 
-    // --- Пропускна здатність шифру на 256 МБ ---
     cout << "\n--- Пропускна здатність ChaCha20 (256 МБ) ---\n";
     const size_t BLOB = 256u * 1024 * 1024;
     const double MB = BLOB / (1024.0 * 1024.0);
-
-    uint8_t key[32], iv[16];
+    uint8_t key[32], iv[16], nonce[12] = {0};
     RAND_bytes(key, 32); RAND_bytes(iv, 16);
 
-    {   // ручний: chacha::xor_stream використовує 12-байтовий нонс
+    {
         vector<uint8_t> buf(BLOB, 0x41);
-        Timer t;
-        chacha::xor_stream(key, iv, buf.data(), buf.size());
+        Timer t; sht::chacha::xor_stream(key, nonce, buf.data(), buf.size());
         double ms = t.ms();
         cout << "Ручний:  " << setw(8) << ms << " ms  -> " << (MB / (ms / 1000.0)) << " МБ/с\n";
         g_sink += buf[0];
     }
-    {   // OpenSSL
+    {
         vector<uint8_t> buf(BLOB, 0x41);
-        Timer t;
-        openssl_chacha(key, iv, buf.data(), (int)buf.size());
+        Timer t; openssl_chacha(key, iv, buf.data(), (int)buf.size());
         double ms = t.ms();
         cout << "OpenSSL: " << setw(8) << ms << " ms  -> " << (MB / (ms / 1000.0)) << " МБ/с\n";
         g_sink += buf[0];
     }
 
-    // --- Перевірка коректності OpenSSL-варіанту ---
     {
         ossl::SecureHashTable t(16);
         t.insert("k", "round-trip-value");
         string out;
         bool ok = t.find("k", out) && out == "round-trip-value";
         const vector<uint8_t>* raw = t.raw_bytes("k");
-        bool encrypted = raw && string(raw->begin(), raw->end()) != "round-trip-value";
+        bool enc = raw && string(raw->begin(), raw->end()) != "round-trip-value";
         cout << "\nКоректність OpenSSL-варіанту: round-trip "
              << (ok ? "OK" : "FAIL") << ", at-rest "
-             << (encrypted ? "зашифровано" : "ВІДКРИТО!") << "\n";
+             << (enc ? "зашифровано" : "ВІДКРИТО!") << "\n";
     }
 
     g_sink += 1;

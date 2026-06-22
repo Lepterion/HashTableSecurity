@@ -5,30 +5,35 @@
 #include <chrono>
 #include <iomanip>
 #include <cstdint>
-#include <functional>
 
 using namespace std;
 using namespace std::chrono;
 
-#include "protocol.cpp"
+#include "protocol.hpp"
 
-// Простий таймер
 struct Timer {
-    high_resolution_clock::time_point t0;
-    Timer() : t0(high_resolution_clock::now()) {}
+    high_resolution_clock::time_point t0{high_resolution_clock::now()};
     double ms() const {
         return duration_cast<duration<double, milli>>(
                    high_resolution_clock::now() - t0).count();
     }
 };
 
-// Глобальний "стік", щоб компілятор не викинув корисну роботу
 static volatile size_t g_sink = 0;
 
-int main() {
-    const int N = 100000; // кількість записів
+template <class Table>
+static void bench_table(Table& table, const vector<string>& keys,
+                        const vector<string>& values,
+                        double& ins, double& fnd) {
+    int N = (int)keys.size();
+    { Timer t; for (int i = 0; i < N; ++i) table.insert(keys[i], values[i]); ins = t.ms(); }
+    { string out; Timer t;
+      for (int i = 0; i < N; ++i) { table.find(keys[i], out); g_sink += out.size(); }
+      fnd = t.ms(); }
+}
 
-    // Заздалегідь готуємо ключі та значення (поза вимірюваннями)
+int main() {
+    const int N = 100000;
     vector<string> keys(N), values(N);
     for (int i = 0; i < N; ++i) {
         keys[i]   = "key_" + to_string(i);
@@ -41,73 +46,50 @@ int main() {
     cout << "============================================================\n\n";
     cout << fixed << setprecision(2);
 
-    // ---------- Plaintext: std::unordered_map ----------
-    unordered_map<string, string> plain;
-    plain.reserve(N);
-
-    double plain_insert, plain_find;
+    // --- plaintext ---
+    double p_ins, p_fnd;
     {
-        Timer t;
-        for (int i = 0; i < N; ++i) plain[keys[i]] = values[i];
-        plain_insert = t.ms();
-    }
-    {
-        Timer t;
-        for (int i = 0; i < N; ++i) g_sink += plain[keys[i]].size();
-        plain_find = t.ms();
+        unordered_map<string, string> plain; plain.reserve(N);
+        { Timer t; for (int i = 0; i < N; ++i) plain[keys[i]] = values[i]; p_ins = t.ms(); }
+        { Timer t; for (int i = 0; i < N; ++i) g_sink += plain[keys[i]].size(); p_fnd = t.ms(); }
     }
 
-    // ---------- Захищена: SecureHashTable ----------
-    SecureHashTable secure(N * 2); // достатньо бакетів, щоб уникнути довгих ланцюжків
+    // --- захищена (ChaCha20) ---
+    double s_ins, s_fnd;
+    { SecureHashTable secure(16); bench_table(secure, keys, values, s_ins, s_fnd); }
 
-    double secure_insert, secure_find;
-    {
-        Timer t;
-        for (int i = 0; i < N; ++i) secure.insert(keys[i], values[i]);
-        secure_insert = t.ms();
-    }
-    {
-        string out;
-        Timer t;
-        for (int i = 0; i < N; ++i) {
-            secure.find(keys[i], out);
-            g_sink += out.size();
-        }
-        secure_find = t.ms();
-    }
+    // --- захищена з автентифікацією (ChaCha20-Poly1305) ---
+    double a_ins, a_fnd;
+    { SecureHashTable secure(16, /*authenticated=*/true); bench_table(secure, keys, values, a_ins, a_fnd); }
 
     auto row = [&](const char* name, double ins, double fnd) {
-        cout << left << setw(22) << name
-             << " insert: " << right << setw(8) << ins << " ms"
-             << "   find: " << setw(8) << fnd << " ms"
-             << "   (" << setw(8) << (N / (fnd / 1000.0)) / 1e6
-             << " M ops/s find)\n";
+        cout << left << setw(28) << name << right
+             << " insert: " << setw(8) << ins << " ms"
+             << "   find: " << setw(8) << fnd << " ms\n";
     };
 
     cout << "--- Операції таблиці ---\n";
-    row("unordered_map", plain_insert, plain_find);
-    row("SecureHashTable",  secure_insert, secure_find);
-    cout << "\nЦіна безпеки (find):   x"
-         << (secure_find / plain_find) << " повільніше\n";
-    cout << "Ціна безпеки (insert): x"
-         << (secure_insert / plain_insert) << " повільніше\n";
+    row("unordered_map (plaintext)", p_ins, p_fnd);
+    row("SecureHashTable",           s_ins, s_fnd);
+    row("SecureHashTable + AEAD",    a_ins, a_fnd);
+    cout << "\nЦіна безпеки (find):   x" << (s_fnd / p_fnd) << " (ChaCha20), x"
+         << (a_fnd / p_fnd) << " (з AEAD)\n";
 
-    // ---------- Пропускна здатність ChaCha20 ----------
+    // --- Пропускна здатність ChaCha20 ---
     cout << "\n--- Пропускна здатність ChaCha20 ---\n";
-    SecurityProtocol crypto;
-    SecureNode node;
-    const size_t BLOB = 64 * 1024 * 1024; // 64 МБ
-    string blob(BLOB, 'A');
+    const size_t BLOB = 64 * 1024 * 1024;
+    const double MB = BLOB / (1024.0 * 1024.0);
+    uint8_t key[32], nonce[12] = {0};
+    for (int i = 0; i < 32; ++i) key[i] = (uint8_t)i;
+    vector<uint8_t> buf(BLOB, 0x41);
     {
         Timer t;
-        crypto.encrypt(&node, blob);          // шифрування 64 МБ
-        double enc_ms = t.ms();
-        double mbps = (BLOB / (1024.0 * 1024.0)) / (enc_ms / 1000.0);
-        cout << "Шифрування 64 МБ: " << enc_ms << " ms  -> "
-             << mbps << " МБ/с\n";
-        crypto.secure_wipe(&node);
+        sht::chacha::xor_stream(key, nonce, buf.data(), buf.size());
+        double ms = t.ms();
+        cout << "Шифрування 64 МБ: " << ms << " ms  -> " << (MB / (ms / 1000.0)) << " МБ/с\n";
+        g_sink += buf[0];
     }
 
-    g_sink += 1; // використовуємо стік
+    g_sink += 1;
     return 0;
 }

@@ -1,10 +1,9 @@
 #include <iostream>
 #include <vector>
 #include <string>
-#include <functional>
 #include <cstdint>
 #include <iomanip> // Для гарного виводу hex кодів
-#include "protocol.cpp"
+#include "protocol.hpp"
 
 using namespace std;
 
@@ -22,7 +21,6 @@ int main() {
     // Таблиця тримає всередині власну сесію шифрування (ChaCha20)
     SecureHashTable vault(16);
 
-    // Зберігаємо кілька секретів — у таблиці вони одразу шифруються
     vault.insert("Binance_API_Key", "abc123xyz987");
     vault.insert("DB_Password",      "qwerty!2026");
     cout << "Збережено 2 секрети у захищену таблицю." << endl;
@@ -46,6 +44,15 @@ int main() {
          << (vault.find("Binance_API_Key", value) ? "ще присутній"
                                                   : "видалено та затерто")
          << endl;
+
+    // ---- Демонстрація режиму AEAD (виявлення підробки) ----
+    cout << "\n--- Режим AEAD (опційно): виявлення підробки ---" << endl;
+    SecureHashTable secure_vault(16, /*authenticated=*/true);
+    secure_vault.insert("token", "Bearer-XYZ");
+    if (secure_vault.find("token", value))
+        cout << "Легальне читання: token = " << value << endl;
+    cout << "Якби зловмисник змінив байт шифротексту, find() кинув би виняток "
+            "\"authentication failed\" — підробку було б виявлено." << endl;
 
     cout << "\nСесію завершено. При знищенні таблиці всі дані затираються."
          << endl;
