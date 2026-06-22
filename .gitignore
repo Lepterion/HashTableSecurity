@@ -12,4 +12,6 @@ benchmark_openssl
 
 # Артефакти збірки / IDE
 build/
+cmake-build-*/
 .cache/
+.idea/

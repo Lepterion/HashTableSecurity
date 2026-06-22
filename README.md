@@ -27,19 +27,26 @@
 * `benchmark_openssl.cpp` — Порівняння трьох реалізацій: ручний ChaCha20 vs OpenSSL vs plaintext.
 
 ## 🚀 Як запустити
-Усе компілюється стандартом C++17, без зовнішніх залежностей.
 
+### Через CMake (рекомендовано)
 ```bash
-# Тести
+cmake -S . -B build
+cmake --build build -j
+ctest --test-dir build --output-on-failure   # запустити тести
+
+# Виконувані файли у build/
+./build/app                 # демо Secure Vault
+./build/benchmark           # бенчмарк ручної реалізації
+./build/benchmark_openssl   # порівняння з OpenSSL (якщо libcrypto знайдено)
+```
+> Ціль `benchmark_openssl` додається автоматично лише за наявності OpenSSL; інакше CMake її пропускає.
+
+### Вручну через g++
+Ядро компілюється стандартом C++17 без зовнішніх залежностей:
+```bash
 g++ -std=c++17 -O2 test.cpp -o test_runner && ./test_runner
-
-# Демо-застосунок
 g++ -std=c++17 -O2 test_app.cpp -o app && ./app
-
-# Бенчмарки
 g++ -std=c++17 -O2 benchmark.cpp -o benchmark && ./benchmark
-
-# Порівняння з OpenSSL (потребує libcrypto)
 g++ -std=c++17 -O2 benchmark_openssl.cpp -o benchmark_openssl -lcrypto && ./benchmark_openssl
 ```
 
